@@ -1,0 +1,521 @@
+<!--
+Autor: Miguel Rojas Barbero
+Partes implementadas:
+- Funcionalidad básica: todo
+- Funcionalidad avanzada: todo
+- Mejoras:
+   - Niveles de dificultad (easy, medium, hard, nightmare): cada nivel tiene un número
+      mayor de bloques y valores incrementales de velocidad para la bola.
+   - Bloques coloreados: los bloques tienen un color distinto en función de su valor, y además
+      para romper un bloque hay que chocarlo tantas veces como sea su valor. El color del bloque cambia
+      acorde a su valor cuando es chocado.
+-->
+
+<!DOCTYPE html>
+<html>
+
+<head>
+<title>Three.js: Collision detection</title>
+<!-- <script async src="https://unpkg.com/es-module-shims@1.3.6/dist/es-module-shims.js"></script> -->
+</head>
+
+<body
+   
+   style="text-align: center; font-family: Arial, Helvetica, sans-serif;
+         background-color: black; color:beige;">
+   <h1>
+      POINTS:
+      <span id="points"></span>
+      LIVES:
+      <span id="lives"></span>
+   </h1>
+   <h2 id="gameStatus"></h2>
+   <b>DIFFICULTY</b>
+   <form name="difForm">
+      <input type="radio" name="difficulty" value="easy" checked> Easy
+      <input type="radio" name="difficulty" value="medium"> Medium
+      <input type="radio" name="difficulty" value="hard"> Hard
+      <input type="radio" name="difficulty" value="nightmare"> Nightmare
+   </form>
+</body>
+
+<script type="module">
+   import * as THREE from './js/three.module.js';
+   import { VRButton } from './js/VRButton.js';
+
+   var pointsText = document.getElementById("points");
+   var livesText = document.getElementById("lives");
+   var gameStatusText = document.getElementById("gameStatus");
+
+   document.difForm.addEventListener('change', function(){
+      var difficulty = document.querySelector('input[name="difficulty"]:checked').value
+      changeGameDifficulty(difficulty);
+   })
+
+   var scene = new THREE.Scene();
+   
+   var baseSpeedX = 0.06;
+   var baseSpeedY = 0.12;
+   var stepX = baseSpeedX;
+   var stepY = baseSpeedY;
+   var speedIncreaseFactor = 0.4;
+
+   var sphereSize =0.6;
+
+   var collisionUserPosition = 0;
+
+   var boardWidth = 20;
+   var boardHeight = 30;
+   var bordersWidth = 0.5;
+   var userWidth = 6;
+
+   var columns = 4;
+   var rows = 6;
+
+   var bricksData = {};
+   var consecutiveBricksBroken = 0;
+
+   var pausedState = true;
+   var restartingGame = false;
+
+   var userStatus = new userInit();
+   userUpdate();
+   init();
+
+   function init() {
+      scene = new THREE.Scene();
+      bricksData = {};
+      var sceneWidth = window.innerWidth - 25;
+      var sceneHeight = window.innerHeight - 180;
+      /*
+      var camera = new THREE.PerspectiveCamera(50, sceneWidth / sceneHeight, 0.01, 100);
+      camera.position.set(0, -5, 40);
+      camera.lookAt(scene.position);
+
+      var renderer = new THREE.WebGLRenderer({
+         physicallyCorrectLights : true,
+         antialias : true,
+      });
+      renderer.shadowMap.enabled = true;
+      renderer.setSize(sceneWidth, sceneHeight);
+      renderer.toneMappingExposure = Math.pow( 1.3, 4.0 );
+      document.body.appendChild(renderer.domElement);
+      */
+      //---------
+      var renderer = new THREE.WebGLRenderer({
+         antialias : true
+      });
+      renderer.shadowMap.enabled = true;
+      renderer.setSize(sceneWidth, sceneHeight);
+      document.body.appendChild(renderer.domElement);
+
+      renderer.xr.enabled = true;
+      document.body.appendChild( VRButton.createButton( renderer ) );
+      
+      var camera = new THREE.PerspectiveCamera(90, sceneWidth / sceneHeight, 0.01, 100);
+      //camera.position.set(0, -10, 15); // Set the initial Camera Position.
+      camera.position.set(0, -10, 25); // Set the initial Camera Position.
+      camera.lookAt(scene.position);
+
+      const cameraGroup = new THREE.Group();
+      //cameraGroup.position.set(0, -15, 5);  // Set the initial VR Headset Position.
+      cameraGroup.position.set(0, -25, 15);  // Set the initial VR Headset Position.
+      cameraGroup.rotation.set(1, 0, 0);
+
+      //When user turn on the VR mode.
+      renderer.xr.addEventListener('sessionstart', function () {
+         scene.add(cameraGroup);
+         cameraGroup.add(camera);
+      });
+      //---------
+      var light1 = getLight(0x38ff67, 1, 10, -10, 15);
+      var light2 = getLight(0x4D00D3, 1.5, -10, -10, 15);
+      var ambientLight = getAmbientLight(0x404040,  0.75);
+      var leftBorder = getHexahedron("left", bordersWidth, boardHeight, sphereSize*10, -boardWidth/2, 0, 0);
+      var rightBorder = getHexahedron("right", bordersWidth, boardHeight,  sphereSize*10, boardWidth/2, 0, 0);
+      var topBorder = getHexahedron("top", boardWidth, bordersWidth,  sphereSize*10, 0, boardHeight/2 - bordersWidth/2, 0);
+      var user = getHexahedron("user", userWidth, bordersWidth,  sphereSize*10, 0, -(boardHeight/2 - bordersWidth/2), 0);
+      var floor = getFloor();
+      var sphere = getSphere();
+      var bricks = getBricks(columns, rows);
+
+      scene.add(light1);
+      scene.add(light2);
+      scene.add(ambientLight);
+      scene.add(leftBorder);
+      scene.add(rightBorder);
+      scene.add(topBorder);
+      scene.add(user);
+      scene.add(sphere);
+      scene.add(floor);
+      scene.add(bricks.meshes);
+      bricksData = bricks.data;
+
+      var borders = [ leftBorder, rightBorder, topBorder];
+
+      animate(sphere, borders, renderer, scene, camera);
+   }
+
+   function animate(sphere, borders, renderer, scene, camera) {
+      if(checkOutside(sphere)){
+         pausedState = true;
+         if(userStatus.lives <= 1){
+            userUpdate({gameStatus: 'LOST! SPACE TO PLAY AGAIN', lives: 0});
+            restartScene(sphere);
+            restartGame();
+         }
+         else {
+            userUpdate({lives: (userStatus.lives-1)});
+            restartScene(sphere);
+         }
+      }
+      checkCollision(sphere, borders);
+      if(!pausedState){
+         sphere.position.x += stepX;
+         sphere.position.y += stepY;
+      }
+      moveUser('-1');
+      renderer.render(scene, camera);
+      renderer.setAnimationLoop( function() {
+         animate(sphere, borders, renderer, scene, camera);
+      });
+   }
+
+   function checkOutside(sphere) {
+      if(sphere.position.y < -boardHeight/2){
+         return true;
+      }
+      else return false;
+   }
+
+   function restartScene(sphere){
+      restartingGame = true;
+      setStartingSpherePosition(sphere);
+      resetUserPositon();
+      resetSpeedValues();
+      restartingGame = false;
+   }
+
+   function restartGame(){
+      restartingGame = true;
+      scene.remove(scene.getObjectByName('bricks'));
+      var bricks = getBricks(columns, rows);
+      scene.add(bricks.meshes);
+      bricksData = bricks.data;
+      restartingGame = false;
+   }
+
+   function resetUserPositon(){
+      var user = scene.getObjectByName('user');
+      user.position.x = 0;
+   }
+
+   function setStartingSpherePosition(sphere){
+      sphere.position.x = 0;
+      sphere.position.y = -boardHeight/2 + bordersWidth*2 + sphereSize;
+      sphere.position.z = sphereSize*5;
+   }
+
+   function resetSpeedValues(){
+      stepX = Math.abs(stepX);
+      stepY = Math.abs(stepY);
+   }
+
+   function moveUser(distance){
+      var speedMultiplier = 2;
+      var userLimit = (boardWidth - bordersWidth)/2 - userWidth/2;
+      var movement = speedMultiplier*distance;
+      var user = scene.getObjectByName('user');
+      var sphere = scene.getObjectByName('sphere');
+      /*if((user.position.x+movement <= userLimit)
+      && (user.position.x+movement >= -userLimit)){
+         user.position.x+=movement;
+      }*/
+      user.position.x = sphere.position.x+movement;
+   }
+
+   function getBricks(columns, rows){
+      const bricksGroup = new THREE.Group();
+      bricksGroup.name = 'bricks';
+      var bricksBuffer = 1/(1*columns);
+      var bricksSpace = boardWidth - 2*bordersWidth;
+      var brickWidth = bricksSpace/columns -bricksBuffer*2;
+      var brickHeight = 0.5;
+      var bricksData = [];
+      for(var row = 0; row < rows; row++){
+         bricksData.push([]);
+         for(var col = 0; col < columns; col++){
+            var value = Math.round((rows - row)/2)
+            bricksGroup.add(
+               getHexahedron('brick_'+row+'-'+col, brickWidth, brickHeight, sphereSize*5,
+                  -boardWidth/2 +bordersWidth +bricksBuffer +brickWidth/2 + col*(brickWidth+2*bricksBuffer),
+                  boardHeight/2 -bordersWidth - brickHeight*2 -row*0.75,
+                  sphereSize*5, getColorValue(value)),
+               );
+            bricksData[row].push({
+               value: value,
+            });
+            }
+         }
+      return {meshes: bricksGroup, data: bricksData};
+   }
+
+   function getAmbientLight(color, intensity) {
+      const light = new THREE.AmbientLight(color, intensity);
+      return light;
+   }
+
+   function getLight(color, intensity, x, y, z) {
+      var light = new THREE.DirectionalLight(color, intensity);
+      light.position.set(x, y, z);
+      light.castShadow = true;
+      light.shadow.camera.near = -40;
+      light.shadow.camera.far = 40;
+      light.shadow.camera.left = -40;
+      light.shadow.camera.right = 40;
+      light.shadow.camera.top = 40;
+      light.shadow.camera.bottom = -40;
+      light.shadow.mapSize.width = 4096;
+      light.shadow.mapSize.height = 4096;
+      return light;
+   }
+
+   function getSphere() {
+      var geometry = new THREE.SphereGeometry(sphereSize, 20, 20);
+      var material = new THREE.MeshStandardMaterial({
+         color: 0x777777,
+         emissiveIntensity: 0,
+         opacity: 0,
+         metalness: 1,
+      });
+      var mesh = new THREE.Mesh(geometry, material);
+      setStartingSpherePosition(mesh);
+      mesh.castShadow = true;
+      mesh.name = "sphere";
+
+      return mesh;
+   }
+
+   function getFloor() {
+      var geometry = new THREE.PlaneGeometry(boardWidth, boardHeight);
+      var mesh = new THREE.Mesh(geometry, getWoodMaterial());
+      mesh.receiveShadow = true;
+      return mesh;
+   }
+
+   function getHexahedron(name, x, y, z, posX, posY, posZ, color) {
+      var geometry = new THREE.BoxGeometry(x, y, z);
+      var mesh = new THREE.Mesh(geometry, getWoodMaterial());
+      mesh.receiveShadow = true;
+      mesh.position.set(posX, posY, posZ);
+      mesh.name = name;
+      if(color){
+         mesh.material.color = color;
+      }
+
+      return mesh;
+   }
+
+   function getWoodMaterial() {
+      var texture = new THREE.TextureLoader().load("Wood01.png");
+      var material = new THREE.MeshPhysicalMaterial({
+         map : texture,
+      });
+      material.map.wrapS = material.map.wrapT = THREE.RepeatWrapping;
+      material.map.repeat.set(2, 2);
+      material.side = THREE.DoubleSide;
+
+      return material;
+   }
+
+   function modifySpeedVector(ballPosition, userPosition){
+      var maxUserDistance = boardWidth - userWidth;
+      var angleRads = Math.acos(-(userPosition - ballPosition)/userWidth)
+      var speedMultiplier = 1+(Math.abs(userPosition-collisionUserPosition)/maxUserDistance)*speedIncreaseFactor;
+      var speedModule = speedMultiplier*Math.sqrt(Math.pow(baseSpeedX,2) + Math.pow(baseSpeedY,2));
+
+      stepX = Math.cos(angleRads)*speedModule;
+      stepY = Math.sin(angleRads)*speedModule;
+   }
+
+   function checkCollision(sphere, borders) {
+      var bricks = scene.getObjectByName('bricks');
+      var user = scene.getObjectByName('user');
+      var originPosition = sphere.position.clone();
+      
+      const positionAttribute = sphere.geometry.getAttribute( 'position' );
+      const localVertex = new THREE.Vector3();
+      const globalVertex = new THREE.Vector3();
+      for ( let vertexIndex = 0; vertexIndex < positionAttribute.count; vertexIndex ++ ) {
+         localVertex.fromBufferAttribute( positionAttribute, vertexIndex );
+         globalVertex.copy( localVertex ).applyMatrix4( sphere.matrixWorld );
+         var directionVector = globalVertex.sub(sphere.position);
+         var ray = new THREE.Raycaster(originPosition, directionVector.clone().normalize());
+         var collisionResults = ray.intersectObjects([...borders,...bricks.children, user]);
+         if (collisionResults.length > 0 && collisionResults[0].distance < directionVector.length()) {
+            var collidedName = collisionResults[0].object.name;
+            if (collidedName == "left" || collidedName == "right") {
+               stepX *= -1;
+            }
+            else if (collidedName == "top") {
+               stepY *= -1;
+            }
+            else if (collidedName == "user"){
+               var userPosition = collisionResults[0].object.position.x;
+               modifySpeedVector(originPosition.x, userPosition);
+               consecutiveBricksBroken = 0;
+            }
+            else if (collidedName.startsWith('brick')){
+               var brickCoords = collidedName.substring(collidedName.indexOf('_') + 1).split('-');
+               var brickValue = bricksData[brickCoords[0]][brickCoords[1]].value;
+               var brickCollided = scene.getObjectByProperty('name', collidedName);
+               if(brickValue > 0){
+                  stepY *= -1;
+                  bricksData[brickCoords[0]][brickCoords[1]].value--;
+                  changeColor(collisionResults[0].object, getColorValue(bricksData[brickCoords[0]][brickCoords[1]].value));
+                  collisionUserPosition = scene.getObjectByName('user').position.x;
+               }
+               if(bricksData[brickCoords[0]][brickCoords[1]].value <= 0){
+                  bricks = scene.getObjectByName('bricks')
+                  bricks.remove(brickCollided);
+                  consecutiveBricksBroken++;
+                  if(consecutiveBricksBroken > 3){
+                     userUpdate({points: userStatus.points+consecutiveBricksBroken*2});
+                  } else{
+                     userUpdate({points: userStatus.points+consecutiveBricksBroken});
+                  }
+                  if(bricks.children.length === 0){
+                     pausedState = true;
+                     userUpdate({gameStatus: 'COMPLETED! SPACE TO PLAY AGAIN'})
+                     restartScene(sphere);
+                     restartGame();
+                  }
+               }
+            }     
+            break;
+         }
+      }
+   }
+
+   function changeColor(object, color){
+      object.material.color = color;
+   }
+
+   function getColorValue(value){
+      var red = 0.25; var green = 0.25; var blue = 0.25; var cycle = 0;
+      for(var count = 0; count < value; count++){
+         cycle++;
+         if (cycle > 4) cycle = 0;
+      }
+      if(cycle === 0){
+         red = 1;
+      }
+      else if(cycle === 1){
+         green = 1;
+      }
+      else if(cycle === 2){
+         blue = 1;
+      }
+      else if(cycle === 3){
+         red = 1;
+         green = 1;
+      }
+      else if(cycle === 4){
+         blue = 1;
+         red = 1;
+      }
+      return {r: red, g: green, b: blue};
+   }
+
+   function userInit() {
+      this.points = 0;
+      this.lives = 3;
+      this.gameStatus = 'PRESS SPACE TO START';
+   }
+
+   function userUpdate(userData) {
+      if(userData){
+         if(userData.points !== null && userData.points !== undefined)
+            userStatus.points = userData.points;
+         if(userData.lives !== null && userData.lives !== undefined)
+            userStatus.lives = userData.lives;
+         if(userData.gameStatus !==null && userData.gameStatus !==undefined)
+            userStatus.gameStatus = userData.gameStatus;
+      }
+      pointsText.innerHTML = userStatus.points;
+      livesText.innerHTML = userStatus.lives;
+      gameStatusText.innerHTML = userStatus.gameStatus;
+   }
+
+   function changeGameDifficulty(difficulty) {
+      userStatus = new userInit();
+      userUpdate();
+      pausedState = true;
+      restartingGame = true;
+      switch(difficulty){
+         case "easy":
+            speedIncreaseFactor = 0.4;
+            columns = 4;
+            rows = 4;
+            baseSpeedX = 0.06;
+            baseSpeedY = 0.12;
+            break;
+         case "medium":
+            speedIncreaseFactor = 0.5;
+            columns = 5;
+            rows = 6;
+            baseSpeedX = 0.08;
+            baseSpeedY = 0.16;
+            break;
+         case "hard":
+            speedIncreaseFactor = 0.6;
+            columns = 6;
+            rows = 8;
+            baseSpeedX = 0.10;
+            baseSpeedY = 0.20;
+            break;
+         case "nightmare":
+            speedIncreaseFactor = 1;
+            columns = 8;
+            rows = 20;
+            baseSpeedX = 0.12;
+            baseSpeedY = 0.24;
+            break;
+         default:                       
+      }
+      stepX = baseSpeedX;
+      stepY = baseSpeedY;
+      restartScene(scene.getObjectByName('sphere'));
+      restartGame();
+   }   
+
+   document.onkeydown = function (ev) {
+         switch(ev.key){
+            case " ":
+               if(!restartingGame){
+                  pausedState = false;
+                  if(userStatus.lives === 0 || userStatus.gameStatus === 'COMPLETED! SPACE TO PLAY AGAIN'){
+                     userUpdate({gameStatus: 'PLAYING...', lives: 3, points: 0});
+                  } else{
+                     userUpdate({gameStatus: 'PLAYING...'});
+                  }
+               }
+                break;
+            case "ArrowLeft":
+               if(!pausedState && !restartingGame){
+                  moveUser('-1');
+               }
+                break;
+            case "ArrowRight":
+               if(!pausedState && !restartingGame){
+                  moveUser('1');
+               }
+                break;
+            default:
+                            
+        }
+    }
+
+</script>
+
+</html>
